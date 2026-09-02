@@ -1,0 +1,205 @@
+name: Build, Zip, and Release Standalone nxproxy
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Grant permissions required to create/modify a GitHub Release
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      # Step 1: Install Cygwin along with all necessary build dependencies
+      - name: Install Cygwin and Packages
+        uses: cygwin/cygwin-install-action@v4
+        with:
+          packages: >-
+            git,
+            make,
+            gcc-core,
+            gcc-g++,
+            autoconf,
+            automake,
+            libtool,
+            pkg-config,
+            zlib-devel,
+            libjpeg-devel,
+            libpng-devel,
+            libX11-devel
+
+      # Step 2: Clone repository, extract internal version file, and run compilation
+      - name: Clone, Extract Version, Build, and Map DLLs
+        shell: C:\cygwin\bin\bash.exe --login -o igncr -eo pipefail {0}
+        run: |
+          # Original source tree
+          SRC_GIT_URL="https://github.com/ArcticaProject/nx-libs.git"
+
+          # 1. Navigate to the GitHub workspace
+          DIR_WORKSPACE="$(cygpath '${{ github.workspace }}')"
+          cd "$DIR_WORKSPACE"
+
+          # 2. Set the version to build
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # Original tag used to trigger the workflow
+            GIT_TAG_ORI="${GITHUB_REF#refs/tags/}"
+            # Strip a leading 'v' from the Git tag if your tagging convention uses it (e.g., v3.6.x vs 3.6.x)
+            GIT_TAG=$(echo "$GIT_TAG_ORI" | sed 's/^v//')
+            REL_VERSION="$GIT_TAG_ORI"
+          else
+            # Select the latest release tag
+            GIT_TAG=$(git ls-remote --tags --sort="v:refname" $SRC_GIT_URL | grep '\^{}$' | cut -d/ -f3- | sed 's/\^{}//' | grep -v '/' | tail -n1)
+
+            # If triggered on main/master branch, append the short commit SHA to source version for distinction
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            REL_VERSION="commit-${SHORT_SHA}"
+          fi
+
+          # Backup the original source zip file for our workflow artifact
+          SRC_ZIP_FILE="nx-libs-source-tag-$GIT_TAG.zip"
+          curl -sSLf -o "$SRC_ZIP_FILE" "https://github.com/ArcticaProject/nx-libs/archive/refs/tags/$GIT_TAG.zip"
+          echo "SRC_ZIP_FILE=$SRC_ZIP_FILE" >> $GITHUB_ENV
+
+          # 3. Clone source tree from the official repository URL
+          git clone --depth 1 --branch $GIT_TAG "$SRC_GIT_URL"
+          cd nx-libs
+
+          # Only restore timestamps for the files in root directory (they are later copied to dist/)
+          # By default, Git does not preserve file modification times (mtime) when you clone a repository
+          git ls-tree --name-only HEAD -z | xargs -0 -n 1 -I {} sh -c 'if [ -f "{}" ]; then ts=$(git log -1 --format="%at" -- "{}"); [ -n "$ts" ] && touch -d "@$ts" "{}"; fi'
+
+          # 4. Read the explicit text 'VERSION' file included in the source code
+          # Automatically strip whitespaces, carriage returns, or trailing line-breaks
+          if [ -f "VERSION" ]; then
+            SRC_VERSION=$(tr -d '\r\n' < VERSION | xargs)
+          else
+            echo "CRITICAL ERROR: Internal source file 'VERSION' not found!"
+            exit 1
+          fi
+
+          if [ "$SRC_VERSION" != "$GIT_TAG" ]; then
+            echo "CRITICAL MISMATCH ERROR: Git tag '$GIT_TAG' does not match internal source version '$SRC_VERSION'!"
+            exit 1
+          fi
+
+          # Forward the validated version out to the GitHub downstream runner environment
+          echo "REL_VERSION=$REL_VERSION" >> $GITHUB_ENV
+
+          # 5. Execute standard compilation blocks
+          cd nxcomp
+          autoreconf -vfi
+          ./configure --disable-valgrind
+          make
+          cd ..
+
+          cd nxproxy
+          autoreconf -vfi
+          ./configure --disable-dependency-tracking --disable-valgrind
+          make
+          cd ..
+
+          # 6. Create deployment bundle folder using absolute paths to avoid shell tracking errors
+          DIR_ROOT_DIST="$DIR_WORKSPACE/dist"
+          mkdir -p "$DIR_ROOT_DIST"
+
+          cp nxproxy/src/.libs/nxproxy.exe "$DIR_ROOT_DIST"/
+          cp nxcomp/src/.libs/cygXcomp-3.dll "$DIR_ROOT_DIST"/
+
+          FILE_DEP_LIST="$DIR_WORKSPACE/dep-list.txt"
+
+          ls -alR "$DIR_ROOT_DIST" >> "$FILE_DEP_LIST"
+          echo "========== cygcheck" >> "$FILE_DEP_LIST"
+          cygcheck "$DIR_ROOT_DIST"/nxproxy.exe "$DIR_ROOT_DIST"/cygXcomp-3.dll >> "$FILE_DEP_LIST"
+          echo "========== ldd" >> "$FILE_DEP_LIST"
+          ldd "$DIR_ROOT_DIST"/nxproxy.exe "$DIR_ROOT_DIST"/cygXcomp-3.dll >> "$FILE_DEP_LIST"
+          echo "==========" >> "$FILE_DEP_LIST"
+
+          # 7. Trace and isolate runtime DLL requirements via cygcheck
+          ldd "$DIR_ROOT_DIST"/nxproxy.exe "$DIR_ROOT_DIST"/cygXcomp-3.dll 2>&1 | \
+            grep -E -i "(/usr/bin/|/bin/)" | \
+            awk '{print $3}' | \
+            while read -r dll_path; do
+              # Clean any residual Windows carriage returns from the string line
+              CLEAN_PATH=$(echo "$dll_path" | tr -d '\r\n')
+              if [ -n "$CLEAN_PATH" ] && [ -f "$CLEAN_PATH" ]; then
+                echo "Bundling system dependency: $CLEAN_PATH"
+                cp -p "$CLEAN_PATH" "$DIR_ROOT_DIST"/
+              fi
+            done || true
+
+          mkdir -p "$DIR_ROOT_DIST/nx-libs"
+          cp -p AUTHORS COPYING ChangeLog LICENSE LICENSE.nxcomp VERSION "$DIR_ROOT_DIST/nx-libs/"
+
+          # 8. Create a static README.txt file safely via an absolute path reference
+          FILE_README="$DIR_ROOT_DIST/README.txt"
+
+          cat << 'EOF' > "$FILE_README"
+          ========================================================================
+          NXPROXY - STANDALONE WINDOWS BINARY (CYGWIN BUILD)
+          ========================================================================
+
+          This package contains a standalone version of nxproxy compiled for 
+          Windows using the Cygwin environment. All necessary library dependencies 
+          (including cygwin1.dll) are bundled in this directory.
+
+          If you are interested in improving X11 forwarding over SSH with nxproxy,
+          the following post explores it in more detail:
+          https://x410.dev/cookbook/boost-x11-forwarding-over-ssh-with-jpeg-png-compression
+
+          QUICK START:
+          ------------
+          1. Extract all files from this ZIP archive into a single directory.
+          2. Keep all bundled .dll files in the same directory as nxproxy.exe.
+          3. Open Command Prompt (cmd.exe) or PowerShell.
+          4. Navigate to this directory and run your command, for example:
+
+            nxproxy.exe -S localhost:16000
+
+          REQUIREMENTS:
+          -------------
+          - Windows 10 / 11 or Windows Server equivalents.
+          - Do NOT delete or separate the bundled DLLs, or the program will fail to launch.
+
+          For more details on configuration flags, see the official nxproxy documentation.
+          ========================================================================
+          EOF
+
+          echo -e "\n" >> "$FILE_README"
+          echo "Application: nxproxy (Windows Standalone Build via Cygwin)" >> "$FILE_README"
+          echo "Source Version File Code: $SRC_VERSION" >> "$FILE_README"
+          echo "Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$FILE_README"
+          echo "Source Repository: https://github.com/ArcticaProject/nx-libs.git" >> "$FILE_README"
+          echo "Commit SHA: ${{ github.sha }}" >> "$FILE_README"
+
+      # Step 3: Upload the synchronized zip file as a standard workflow artifact
+      - name: Upload Zip Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: nxproxy-${{ env.REL_VERSION }}-artifacts
+          path: |
+            dist/
+            dep-list.txt
+            ${{ env.SRC_ZIP_FILE }}
+
+      # Step 4: Compress the distribution folder into a synchronized .zip archive
+      - name: Create ZIP Archive
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: powershell
+        run: |
+          $sourcePath = "${{ github.workspace }}\dist"
+          $zipPath = "${{ github.workspace }}\nxproxy-${{ env.REL_VERSION }}-win-standalone-x64.zip"
+          Compress-Archive -Path "$sourcePath\*" -DestinationPath $zipPath -Force
+
+      # Step 5: Automatically publish the validated ZIP to GitHub Releases
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v3
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: nxproxy-${{ env.REL_VERSION }}-win-standalone-x64.zip
+          name: Release ${{ env.REL_VERSION }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
