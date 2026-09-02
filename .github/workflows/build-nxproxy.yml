@@ -27,8 +27,8 @@ jobs:
             libtool,
             pkg-config,
             zlib-devel,
-            libjpeg-turbo,
-            libjpeg-turbo-devel,
+            libjpeg-devel,
+            libturbojpeg-devel,
             libpng-devel,
             libX11-devel
 
