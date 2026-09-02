@@ -89,21 +89,21 @@ jobs:
           # Forward the validated version out to the GitHub downstream runner environment
           echo "REL_VERSION=$REL_VERSION" >> $GITHUB_ENV
 
-          export CFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -DNDEBUG"
-          export CXXFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -DNDEBUG"
-          export LDFLAGS="-flto -Wl,--O1 -Wl,--enable-auto-image-base"
-
           # 5. Execute standard compilation blocks
           cd nxcomp
           autoreconf -vfi
           ./configure --disable-valgrind
-          make -j$(nproc)
+          make -j$(nproc) CFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -DNDEBUG" \
+            CXXFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -DNDEBUG" \
+            LDFLAGS="-flto -Wl,--O1 -Wl,--enable-auto-image-base"
           cd ..
 
           cd nxproxy
           autoreconf -vfi
           ./configure --disable-dependency-tracking --disable-valgrind
-          make -j$(nproc)
+          make -j$(nproc) CFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -DNDEBUG" \
+            CXXFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -DNDEBUG" \
+            LDFLAGS="-flto -Wl,--O1 -Wl,--enable-auto-image-base"
           cd ..
 
           # 6. Create deployment bundle folder using absolute paths to avoid shell tracking errors
