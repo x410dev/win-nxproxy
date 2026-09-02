@@ -27,7 +27,8 @@ jobs:
             libtool,
             pkg-config,
             zlib-devel,
-            libjpeg-devel,
+            libjpeg-turbo,
+            libjpeg-turbo-devel,
             libpng-devel,
             libX11-devel
 
@@ -87,6 +88,10 @@ jobs:
 
           # Forward the validated version out to the GitHub downstream runner environment
           echo "REL_VERSION=$REL_VERSION" >> $GITHUB_ENV
+
+          export CFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -ffast-math -DNDEBUG"
+          export CXXFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -ffast-math -DNDEBUG"
+          export LDFLAGS="-flto -Wl,--O1 -Wl,--enable-auto-image-base"
 
           # 5. Execute standard compilation blocks
           cd nxcomp
