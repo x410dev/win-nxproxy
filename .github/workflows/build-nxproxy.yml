@@ -95,7 +95,7 @@ jobs:
           ./configure --disable-valgrind
           make -j$(nproc) CFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -DNDEBUG" \
             CXXFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -DNDEBUG" \
-            LDFLAGS="-flto -Wl,--O1 -Wl,--enable-auto-image-base"
+            LDFLAGS="-flto -Wl,-O1 -Wl,--enable-auto-image-base"
           cd ..
 
           cd nxproxy
@@ -103,7 +103,7 @@ jobs:
           ./configure --disable-dependency-tracking --disable-valgrind
           make -j$(nproc) CFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -DNDEBUG" \
             CXXFLAGS="-O3 -march=native -mtune=native -flto -funroll-loops -DNDEBUG" \
-            LDFLAGS="-flto -Wl,--O1 -Wl,--enable-auto-image-base"
+            LDFLAGS="-flto -Wl,-O1 -Wl,--enable-auto-image-base"
           cd ..
 
           # 6. Create deployment bundle folder using absolute paths to avoid shell tracking errors
